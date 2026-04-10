@@ -901,7 +901,7 @@ function EvolutionChart({ data, strategies, width = 700, height = 360 }) {
     const significant = [];
     for (let si = 0; si < strategies.length; si++) {
       const maxPop = Math.max(...data.map(d => d[si]));
-      if (maxPop > 0.05) significant.push(si);
+      if (maxPop > 0.01) significant.push(si);
     }
 
     // Colors
@@ -915,7 +915,7 @@ function EvolutionChart({ data, strategies, width = 700, height = 360 }) {
     // Draw lines
     significant.forEach((si, idx) => {
       ctx.strokeStyle = palette[idx];
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 2.5;
       ctx.globalAlpha = 0.85;
       ctx.beginPath();
       for (let g = 0; g < data.length; g++) {
@@ -943,7 +943,7 @@ function EvolutionChart({ data, strategies, width = 700, height = 360 }) {
     });
   }, [data, strategies, width, height]);
 
-  return <canvas ref={canvasRef} style={{ width, height }} />;
+  return <canvas ref={canvasRef} style={{ width: "100%", height: height, display: "block" }} />;
 }
 
 // Heat map
@@ -1079,7 +1079,7 @@ function MatchReplay({ s1, s2, history1, history2, score1, score2, rounds }) {
     // Lines
     [{ data: scores1, color: COLORS.accent }, { data: scores2, color: COLORS.gold }].forEach(({ data, color }) => {
       ctx.strokeStyle = color;
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 2.5;
       ctx.beginPath();
       data.forEach((v, i) => {
         const x = pad.left + (i / (rounds - 1)) * cw;
