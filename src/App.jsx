@@ -1847,12 +1847,3 @@ export default function PDArena() {
 
   return null;
 }
-
-
-
-wc -l ~/pd-arena/src/App.jsx
-
-
-
-:q
-
