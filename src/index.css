@@ -1,0 +1,271 @@
+/* ============================================================
+   PD ARENA â€” DESIGN SYSTEM (ported from landing)
+   Drop this into ~/pd-arena/src/index.css
+   Import in main.jsx: import './index.css'
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+/* ===================== TOKENS ===================== */
+:root {
+  --bg: #0c0a09;
+  --bg-2: #14110f;
+  --paper: #f5f1e8;
+  --ink: #ece6d7;
+  --ink-dim: #a39985;
+  --ink-faint: #5c5446;
+  --line: #2a2420;
+  --amber: #d4a373;
+  --amber-hi: #f0c17e;
+  --rust: #b23a3a;
+  --rust-hi: #d64545;
+  --leaf: #7a8c5c;
+  --serif: 'Fraunces', 'Georgia', serif;
+  --mono: 'JetBrains Mono', 'SF Mono', 'Menlo', monospace;
+}
+
+/* ===================== RESET + BASE ===================== */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--serif);
+  font-optical-sizing: auto;
+  line-height: 1.5;
+  overflow-x: hidden;
+  min-height: 100vh;
+  background-image:
+    radial-gradient(circle at 20% 10%, rgba(212, 163, 115, 0.04), transparent 50%),
+    radial-gradient(circle at 80% 60%, rgba(178, 58, 58, 0.03), transparent 50%);
+}
+
+/* Paper grain overlay */
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' /%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.3' /%3E%3C/svg%3E");
+  opacity: 0.035;
+  pointer-events: none;
+  z-index: 1;
+  mix-blend-mode: overlay;
+}
+
+button { font-family: inherit; cursor: pointer; }
+input, select, textarea { font-family: inherit; }
+
+/* ===================== TYPOGRAPHY ===================== */
+h1, h2, h3, h4 {
+  font-family: var(--serif);
+  color: var(--paper);
+  font-variation-settings: "opsz" 144;
+  letter-spacing: -0.015em;
+  line-height: 1.05;
+}
+h1 { font-weight: 300; font-size: clamp(48px, 6vw, 80px); letter-spacing: -0.02em; }
+h2 { font-weight: 300; font-size: clamp(32px, 4vw, 48px); }
+h3 { font-weight: 400; font-size: 22px; line-height: 1.2; }
+h4 { font-weight: 500; font-size: 20px; line-height: 1.2; }
+
+h1 em, h2 em, h3 em {
+  font-style: italic;
+  color: var(--amber);
+  font-weight: 400;
+}
+
+/* Utility: large serif number (scores, big stats) */
+.serif-num {
+  font-family: var(--serif);
+  font-weight: 300;
+  color: var(--paper);
+  font-variation-settings: "opsz" 144;
+  line-height: 1;
+}
+
+/* Utility: mono label (captions, small text) */
+.mono-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* Utility: eyebrow (section pre-title) */
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.3em;
+  color: var(--amber);
+  text-transform: uppercase;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.eyebrow::before {
+  content: '';
+  width: 24px; height: 1px;
+  background: currentColor;
+}
+
+/* ===================== BUTTONS ===================== */
+.btn {
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  padding: 10px 18px;
+  background: var(--amber);
+  color: var(--bg);
+  border: none;
+  border-radius: 2px;
+  font-weight: 700;
+  text-transform: uppercase;
+  transition: all 0.2s;
+  text-decoration: none;
+  display: inline-block;
+}
+.btn:hover { background: var(--amber-hi); transform: translateY(-1px); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+.btn-ghost:hover { border-color: var(--amber); color: var(--amber); background: transparent; transform: translateY(-1px); }
+
+.btn-danger {
+  background: var(--rust);
+  color: var(--paper);
+}
+.btn-danger:hover { background: var(--rust-hi); }
+
+/* ===================== CARDS ===================== */
+.card {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 24px;
+  transition: all 0.2s;
+}
+.card-hover:hover {
+  border-color: var(--amber);
+  transform: translateY(-2px);
+}
+.card-active {
+  border-color: var(--amber);
+  background: rgba(212, 163, 115, 0.04);
+}
+
+/* Dashed internal divider â€” signature pattern */
+.divider-dashed {
+  border: none;
+  border-top: 1px dashed var(--line);
+  margin: 16px 0;
+}
+.divider-solid {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 16px 0;
+}
+
+/* ===================== CHIPS ===================== */
+.chip {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  color: var(--ink-dim);
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 0;
+}
+.chip-nice {
+  color: var(--leaf);
+  border-color: rgba(122, 140, 92, 0.5);
+  background: rgba(122, 140, 92, 0.08);
+}
+.chip-bad {
+  color: var(--rust-hi);
+  border-color: rgba(178, 58, 58, 0.5);
+  background: rgba(178, 58, 58, 0.08);
+}
+.chip-amber {
+  color: var(--amber);
+  border-color: rgba(212, 163, 115, 0.5);
+  background: rgba(212, 163, 115, 0.08);
+}
+
+/* ===================== INPUTS ===================== */
+input[type="text"], input[type="number"], textarea, select {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  padding: 10px 14px;
+  border-radius: 2px;
+  font-family: var(--mono);
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+input[type="text"]:focus, input[type="number"]:focus, textarea:focus, select:focus {
+  border-color: var(--amber);
+}
+input::placeholder, textarea::placeholder { color: var(--ink-faint); }
+
+/* Slider */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 2px;
+  background: var(--line);
+  outline: none;
+  border-radius: 0;
+  width: 100%;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px; height: 14px;
+  background: var(--amber);
+  cursor: pointer;
+  border-radius: 50%;
+}
+input[type="range"]::-moz-range-thumb {
+  width: 14px; height: 14px;
+  background: var(--amber);
+  cursor: pointer;
+  border: none;
+  border-radius: 50%;
+}
+
+/* ===================== GAME SEMANTIC COLORS ===================== */
+.cooperate { color: var(--amber); }
+.defect { color: var(--rust); }
+.nice { color: var(--leaf); }
+
+/* ===================== ANIMATIONS ===================== */
+@keyframes pulse { 50% { opacity: 0.3; } }
+.live-dot::before {
+  content: 'â—';
+  color: var(--rust);
+  margin-right: 8px;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fadeIn 0.4s ease-out; }
+
+/* ===================== SCROLLBAR ===================== */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 0; }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-faint); }
+
+/* ===================== SELECTION ===================== */
+::selection { background: var(--amber); color: var(--bg); }
