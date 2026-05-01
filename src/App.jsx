@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 
 // ============================================================
 // PD ARENA v7 — restyled to match landing visual language
@@ -883,6 +883,743 @@ function AboutPage({ onBack }) {
 }
 
 // ============================================================
+// LIVE TOURNAMENT VIEW — Bloomberg-style streaming animation
+// ============================================================
+const STRAT_COLOR = (cat) => {
+  const c = STRATEGY_CATEGORIES.find(x => x.id === cat);
+  return c ? c.color : C.inkDim;
+};
+
+function LiveTournamentView({ strategies, rounds, noise, payoffs, onComplete, onCancel }) {
+  const [matchSpeed, setMatchSpeed] = useState(200); // ms per match
+  const matchSpeedRef = useRef(matchSpeed);
+  useEffect(() => { matchSpeedRef.current = matchSpeed; }, [matchSpeed]);
+
+  const [progress, setProgress] = useState(0);
+  const [scores, setScores] = useState(() => new Array(strategies.length).fill(0));
+  const [scoreHistory, setScoreHistory] = useState(() => [new Array(strategies.length).fill(0)]); // [matchIdx][stratIdx]
+  const [matchesPlayed, setMatchesPlayed] = useState({}); // "i-j" -> {score1, score2}
+  const [ticker, setTicker] = useState([]);
+  const [current, setCurrent] = useState(null);
+  const [done, setDone] = useState(false);
+  const [now, setNow] = useState(new Date());
+  const [paused, setPaused] = useState(false);
+  const pausedRef = useRef(false);
+  useEffect(() => { pausedRef.current = paused; }, [paused]);
+  const cancelRef = useRef(false);
+  const completedRef = useRef(false);
+  const [chartFullscreen, setChartFullscreen] = useState(false);
+  const [highlightedIdx, setHighlightedIdx] = useState(null);
+  const [lockedIdx, setLockedIdx] = useState(null);
+
+  // Esc closes fullscreen chart
+  useEffect(() => {
+    if (!chartFullscreen) return;
+    const onKey = (e) => { if (e.key === "Escape") setChartFullscreen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [chartFullscreen]);
+
+  // Schedule
+  const schedule = useMemo(() => {
+    const out = [];
+    for (let i = 0; i < strategies.length; i++)
+      for (let j = i + 1; j < strategies.length; j++)
+        out.push({ i, j, key: `${i}-${j}` });
+    return out;
+  }, [strategies]);
+
+  // Live clock
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Streaming tournament
+  useEffect(() => {
+    let cancelled = false;
+    cancelRef.current = false;
+    completedRef.current = false;
+
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const applyNoiseLocal = (m) => noise > 0 && Math.random() < noise ? (m === "C" ? "D" : "C") : m;
+
+    const run = async () => {
+      const matchResults = {};
+      const scoresArr = new Array(strategies.length).fill(0);
+      const histAll = [scoresArr.slice()];
+
+      for (let idx = 0; idx < schedule.length; idx++) {
+        if (cancelRef.current || cancelled) return;
+        while (pausedRef.current) {
+          if (cancelRef.current || cancelled) return;
+          await sleep(80);
+        }
+
+        const { i, j, key } = schedule[idx];
+        const s1 = strategies[i], s2 = strategies[j];
+        const h1 = [], h2 = [];
+        let sc1 = 0, sc2 = 0;
+        const showSnaps = Math.min(8, rounds); // 8 visual updates per match
+        const stride = Math.max(1, Math.floor(rounds / showSnaps));
+        const speed = matchSpeedRef.current;
+        const perSnap = Math.max(8, Math.floor(speed / (showSnaps + 1)));
+
+        for (let r = 0; r < rounds; r++) {
+          let m1 = s1.fn(h1, h2, r, rounds, payoffs);
+          let m2 = s2.fn(h2, h1, r, rounds, payoffs);
+          m1 = applyNoiseLocal(m1);
+          m2 = applyNoiseLocal(m2);
+          sc1 += payoffs[m1 + m2][0];
+          sc2 += payoffs[m1 + m2][1];
+          h1.push(m1); h2.push(m2);
+
+          if (r % stride === 0 || r === rounds - 1) {
+            setCurrent({
+              i, j, round: r + 1, total: rounds,
+              move1: m1, move2: m2,
+              score1: sc1, score2: sc2,
+              h1: h1.slice(-30), h2: h2.slice(-30),
+              payoff: payoffs[m1 + m2],
+            });
+            await sleep(perSnap);
+            if (cancelRef.current || cancelled) return;
+            while (pausedRef.current) {
+              if (cancelRef.current || cancelled) return;
+              await sleep(80);
+            }
+          }
+        }
+
+        // Commit match
+        matchResults[key] = { score1: sc1, score2: sc2, history1: h1, history2: h2 };
+        scoresArr[i] += sc1;
+        scoresArr[j] += sc2;
+        histAll.push(scoresArr.slice());
+
+        setScores(scoresArr.slice());
+        setScoreHistory(histAll.slice());
+        setMatchesPlayed(m => ({ ...m, [key]: { score1: sc1, score2: sc2 } }));
+        setTicker(t => [{
+          key: key + "_" + idx,
+          i, j, sc1, sc2, t: new Date(),
+        }, ...t].slice(0, 40));
+        setProgress(idx + 1);
+
+        await sleep(Math.max(20, matchSpeedRef.current * 0.2));
+      }
+
+      if (cancelled || cancelRef.current) return;
+      completedRef.current = true;
+      setDone(true);
+      setCurrent(null);
+
+      // Build standings in same format as original runTournament
+      const standings = strategies.map((s, i) => ({
+        index: i,
+        name: s.name,
+        category: s.category,
+        score: scoresArr[i],
+        avgPerMatch: scoresArr[i] / (strategies.length - 1),
+        avgPerRound: scoresArr[i] / ((strategies.length - 1) * rounds),
+      })).sort((a, b) => b.score - a.score);
+
+      // Auto-finalize after a brief pause so user sees final state
+      setTimeout(() => {
+        if (!cancelled) onComplete({ standings, matchResults, scores: scoresArr });
+      }, 800);
+    };
+
+    run();
+    return () => { cancelled = true; cancelRef.current = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const standingsLive = useMemo(() =>
+    strategies.map((s, i) => ({ ...s, idx: i, score: scores[i], played: Object.keys(matchesPlayed).filter(k => k.startsWith(i + "-") || k.endsWith("-" + i)).length }))
+      .sort((a, b) => b.score - a.score)
+  , [scores, strategies, matchesPlayed]);
+
+  const fmtClock = (d) => d.toLocaleTimeString("en-US", { hour12: false });
+  const fmtMs = (d) => fmtClock(d) + "." + String(d.getMilliseconds()).padStart(3, "0");
+
+  // Color blocks
+  const cardBg = C.bg2;
+  const panel = (title, meta, children, extra = {}) => (
+    <div style={{ background: cardBg, border: `1px solid ${C.line}`, display: "flex", flexDirection: "column", minHeight: 0, ...extra }}>
+      <div style={{ padding: "8px 14px", borderBottom: `1px solid ${C.line}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: C.bg3 }}>
+        <span style={{ fontFamily: mono, fontSize: 9, letterSpacing: "0.25em", textTransform: "uppercase", color: C.amber }}>◆ {title}</span>
+        {meta && <span style={{ fontFamily: mono, fontSize: 9, letterSpacing: "0.15em", color: C.inkFaint, textTransform: "uppercase" }}>{meta}</span>}
+      </div>
+      <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>{children}</div>
+    </div>
+  );
+
+  const totalMatches = schedule.length;
+  const maxScore = Math.max(1, ...scores);
+
+  return (
+    <div style={{ background: C.bg, color: C.ink, minHeight: "100vh", fontFamily: mono, fontSize: 12, position: "relative" }}>
+      {/* CRT scanline overlay */}
+      <div style={{
+        position: "fixed", inset: 0, pointerEvents: "none", zIndex: 50,
+        backgroundImage: "repeating-linear-gradient(0deg, transparent 0px, transparent 2px, rgba(0,0,0,0.08) 3px, rgba(0,0,0,0.08) 4px)",
+        opacity: 0.5,
+      }} />
+
+      {/* Header */}
+      <div style={{ display: "grid", gridTemplateColumns: "auto 1fr auto", alignItems: "center", padding: "12px 24px", borderBottom: `1px solid ${C.line}`, background: `linear-gradient(180deg, ${C.bg3} 0%, ${C.bg2} 100%)`, gap: 24 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 14 }}>
+          <span style={{ fontFamily: serif, fontStyle: "italic", fontSize: 24, color: C.paper, fontVariationSettings: '"opsz" 144' }}>PD Arena</span>
+          <span style={{ fontFamily: mono, fontSize: 9, letterSpacing: "0.3em", color: C.inkFaint, textTransform: "uppercase", borderLeft: `1px solid ${C.line}`, paddingLeft: 12 }}>Live Tournament Terminal</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "center", gap: 28, fontSize: 10 }}>
+          {[
+            ["Strategies", strategies.length],
+            ["Matches", `${progress}/${totalMatches}`],
+            ["Rounds", rounds],
+            ["Noise", noise > 0 ? `${(noise * 100).toFixed(1)}%` : "0%"],
+            ["Status", done ? "COMPLETE" : paused ? "PAUSED" : "RUNNING"],
+          ].map(([l, v]) => (
+            <div key={l} style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+              <span style={{ color: C.inkFaint, letterSpacing: "0.15em", textTransform: "uppercase", fontSize: 9 }}>{l}</span>
+              <span style={{ color: done ? C.leafHi : C.amber, fontWeight: 600 }}>{v}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          <span style={{
+            width: 8, height: 8, borderRadius: "50%",
+            background: done ? C.leafHi : paused ? C.amber : C.rustHi,
+            boxShadow: `0 0 8px ${done ? C.leafHi : paused ? C.amber : C.rustHi}`,
+            animation: !done && !paused ? "pdpulse 1s infinite" : "none",
+          }} />
+          <span style={{ color: C.leafHi, fontSize: 13, letterSpacing: "0.05em" }}>{fmtClock(now)}</span>
+        </div>
+      </div>
+
+      <style>{`
+        @keyframes pdpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+        @keyframes pdscroll { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
+        @keyframes pdblink { 0%,49% { opacity: 1; } 50%,100% { opacity: 0.3; } }
+        .pd-live-track { animation: pdscroll 80s linear infinite; }
+      `}</style>
+
+      {/* Ticker */}
+      <div style={{ background: "#000", borderBottom: `1px solid ${C.line}`, height: 30, display: "flex", alignItems: "center", overflow: "hidden" }}>
+        <div style={{ background: C.amber, color: C.bg, padding: "0 14px", height: "100%", display: "flex", alignItems: "center", fontWeight: 700, fontSize: 9, letterSpacing: "0.25em", flexShrink: 0, fontFamily: mono }}>▸ RESULTS</div>
+        {ticker.length === 0 ? (
+          <div style={{ paddingLeft: 16, color: C.inkFaint, fontStyle: "italic", fontSize: 11 }}>Awaiting first match...</div>
+        ) : (
+          <div className="pd-live-track" style={{ display: "flex", gap: 28, paddingLeft: 16, whiteSpace: "nowrap" }}>
+            {[...ticker, ...ticker].map((t, k) => {
+              const win = t.sc1 > t.sc2 ? "▲" : t.sc1 < t.sc2 ? "▼" : "◆";
+              const winColor = t.sc1 > t.sc2 ? C.leafHi : t.sc1 < t.sc2 ? C.rustHi : C.amber;
+              return (
+                <div key={t.key + "_" + k} style={{ display: "inline-flex", gap: 8, alignItems: "baseline", fontSize: 11 }}>
+                  <span style={{ color: STRAT_COLOR(strategies[t.i].category), fontWeight: 500 }}>{strategies[t.i].name.split(" ").map(w => w[0]).join("").slice(0, 4).toUpperCase()}</span>
+                  <span style={{ color: C.inkFaint }}>vs</span>
+                  <span style={{ color: STRAT_COLOR(strategies[t.j].category), fontWeight: 500 }}>{strategies[t.j].name.split(" ").map(w => w[0]).join("").slice(0, 4).toUpperCase()}</span>
+                  <span style={{ color: C.amber }}>{t.sc1}–{t.sc2}</span>
+                  <span style={{ color: winColor }}>{win}</span>
+                  <span style={{ color: C.inkFaint, fontSize: 9 }}>{fmtClock(t.t)}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Controls */}
+      <div style={{ display: "flex", alignItems: "center", gap: 16, padding: "10px 24px", borderBottom: `1px solid ${C.line}`, background: C.bg2 }}>
+        <button onClick={onCancel}
+          style={{ background: "transparent", border: `1px solid ${C.rustHi}`, color: C.rustHi, padding: "6px 14px", fontFamily: mono, fontSize: 10, letterSpacing: "0.15em", textTransform: "uppercase", cursor: "pointer", fontWeight: 600 }}>
+          ■ Stop
+        </button>
+        <button onClick={() => setPaused(p => !p)} disabled={done}
+          style={{ background: "transparent", border: `1px solid ${C.amber}`, color: C.amber, padding: "6px 14px", fontFamily: mono, fontSize: 10, letterSpacing: "0.15em", textTransform: "uppercase", cursor: done ? "not-allowed" : "pointer", fontWeight: 600, opacity: done ? 0.4 : 1 }}>
+          {paused ? "▸ Resume" : "❚❚ Pause"}
+        </button>
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center", marginLeft: 8 }}>
+          <span style={{ fontSize: 9, letterSpacing: "0.2em", color: C.inkFaint, textTransform: "uppercase" }}>Speed</span>
+          <input type="range" min="30" max="3000" step="10" value={matchSpeed}
+            onChange={(e) => setMatchSpeed(Number(e.target.value))}
+            style={{ accentColor: C.amber, width: 160 }} />
+          <span style={{ color: C.amber, fontWeight: 600, minWidth: 60, fontSize: 11 }}>{matchSpeed}ms</span>
+        </div>
+
+        <div style={{ display: "flex", gap: 4 }}>
+          {[
+            ["FAST", 50], ["NORM", 200], ["SLOW", 800], ["MAX", 3000],
+          ].map(([l, v]) => (
+            <button key={l} onClick={() => setMatchSpeed(v)}
+              style={{ background: matchSpeed === v ? C.amber : "transparent", color: matchSpeed === v ? C.bg : C.inkDim, border: `1px solid ${matchSpeed === v ? C.amber : C.line}`, padding: "5px 9px", fontFamily: mono, fontSize: 9, letterSpacing: "0.15em", cursor: "pointer", fontWeight: 600 }}>
+              {l}
+            </button>
+          ))}
+        </div>
+
+        {/* Progress bar */}
+        <div style={{ flex: 1, height: 18, background: C.bg3, border: `1px solid ${C.line}`, position: "relative", overflow: "hidden" }}>
+          <div style={{
+            height: "100%", width: `${(progress / totalMatches) * 100}%`,
+            background: `linear-gradient(90deg, ${C.amber}, ${C.amberHi})`,
+            transition: "width 0.2s",
+          }} />
+          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", color: C.paper, mixBlendMode: "difference" }}>
+            {progress} / {totalMatches} · {((progress / totalMatches) * 100).toFixed(0)}%
+          </div>
+        </div>
+      </div>
+
+      {/* Main grid */}
+      <div style={{ display: "grid", gridTemplateColumns: "300px minmax(0,1fr) 380px", gap: 1, background: C.line, height: "calc(100vh - 145px)", minHeight: 600 }}>
+        {/* LEFT: Standings */}
+        {panel("Standings", "BY TOTAL", (
+          <div>
+            <div style={{ display: "grid", gridTemplateColumns: "24px 1fr 60px", gap: 6, padding: "8px 12px", background: "#000", color: C.inkFaint, fontSize: 9, letterSpacing: "0.15em", textTransform: "uppercase", position: "sticky", top: 0, zIndex: 1, fontWeight: 600 }}>
+              <span>#</span><span>Strategy</span><span style={{ textAlign: "right" }}>Score</span>
+            </div>
+            {standingsLive.map((s, rank) => {
+              const desc = strategies[s.idx].description || "";
+              const shortDesc = desc.split(".")[0]; // first sentence
+              return (
+                <div key={s.idx} style={{ display: "grid", gridTemplateColumns: "24px 1fr 60px", gap: 6, padding: "7px 12px", borderBottom: `1px solid ${C.bg3}`, fontSize: 11, alignItems: "center", position: "relative" }}>
+                  <div style={{ position: "absolute", inset: 0, background: `linear-gradient(90deg, ${STRAT_COLOR(s.category)}15 0%, ${STRAT_COLOR(s.category)}15 ${(s.score / maxScore) * 100}%, transparent ${(s.score / maxScore) * 100}%)`, transition: "background 0.5s" }} />
+                  <span style={{ color: rank === 0 ? C.amber : C.inkFaint, fontWeight: 700, position: "relative", alignSelf: "start", paddingTop: 1 }}>{String(rank + 1).padStart(2, "0")}</span>
+                  <div style={{ minWidth: 0, position: "relative" }}>
+                    <div style={{ color: STRAT_COLOR(s.category), fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</div>
+                    <div style={{ color: C.inkFaint, fontSize: 9, fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 1, fontFamily: serif, fontVariationSettings: '"opsz" 14' }} title={desc}>{shortDesc}</div>
+                  </div>
+                  <span style={{ textAlign: "right", color: C.leafHi, fontWeight: 600, position: "relative", alignSelf: "start", paddingTop: 1 }}>{s.score}</span>
+                </div>
+              );
+            })}
+          </div>
+        ))}
+
+        {/* CENTER: Current Match */}
+        {panel("Current Match", current ? `LIVE · R${current.round}/${current.total}` : done ? "COMPLETE" : "STANDBY", (
+          !current ? (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", flexDirection: "column", gap: 12, color: C.inkFaint, padding: 24 }}>
+              <div style={{ fontFamily: serif, fontStyle: "italic", fontSize: 32, color: C.inkDim, fontVariationSettings: '"opsz" 144' }}>
+                {done ? "Tournament Complete" : "Awaiting Start"}
+              </div>
+              {done && standingsLive[0] && (
+                <div style={{ fontSize: 11, letterSpacing: "0.2em", textTransform: "uppercase", color: C.amber }}>
+                  ◆ Champion: {standingsLive[0].name}
+                </div>
+              )}
+              {done && (
+                <div style={{ fontSize: 10, color: C.inkFaint, marginTop: 8 }}>Loading detailed results...</div>
+              )}
+            </div>
+          ) : (
+            <div style={{ padding: 18, display: "flex", flexDirection: "column", gap: 16, height: "100%" }}>
+              {/* Headline */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", alignItems: "center", gap: 16, paddingBottom: 14, borderBottom: `1px dashed ${C.line}` }}>
+                <div>
+                  <div style={{ fontSize: 9, letterSpacing: "0.2em", color: C.inkFaint, textTransform: "uppercase" }}>{strategies[current.i].category}</div>
+                  <div style={{ fontFamily: serif, fontStyle: "italic", fontSize: 22, color: STRAT_COLOR(strategies[current.i].category), lineHeight: 1.1, fontVariationSettings: '"opsz" 144' }}>{strategies[current.i].name}</div>
+                  <div style={{ fontSize: 28, fontWeight: 700, color: C.amber, marginTop: 4, fontFamily: mono }}>{current.score1}</div>
+                </div>
+                <div style={{ fontFamily: serif, fontStyle: "italic", color: C.inkFaint, fontSize: 22, fontVariationSettings: '"opsz" 144' }}>vs</div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 9, letterSpacing: "0.2em", color: C.inkFaint, textTransform: "uppercase" }}>{strategies[current.j].category}</div>
+                  <div style={{ fontFamily: serif, fontStyle: "italic", fontSize: 22, color: STRAT_COLOR(strategies[current.j].category), lineHeight: 1.1, fontVariationSettings: '"opsz" 144' }}>{strategies[current.j].name}</div>
+                  <div style={{ fontSize: 28, fontWeight: 700, color: C.leafHi, marginTop: 4, fontFamily: mono }}>{current.score2}</div>
+                </div>
+              </div>
+
+              {/* Round counter */}
+              <div style={{ display: "flex", gap: 12, alignItems: "center", fontSize: 9, color: C.inkFaint, letterSpacing: "0.2em", textTransform: "uppercase" }}>
+                <span>Round</span>
+                <span style={{ fontSize: 16, color: C.amber, fontWeight: 700, letterSpacing: 0, fontFamily: mono }}>
+                  {String(current.round).padStart(3, "0")}/{current.total}
+                </span>
+                <div style={{ flex: 1, height: 4, background: C.bg3, position: "relative", overflow: "hidden" }}>
+                  <div style={{ height: "100%", background: C.amber, width: `${(current.round / current.total) * 100}%`, transition: "width 0.1s" }} />
+                </div>
+              </div>
+
+              {/* Detail grid */}
+              <div style={{ display: "grid", gridTemplateColumns: "230px 1fr", gap: 14, minHeight: 0, flex: 1 }}>
+                {/* Payoff matrix */}
+                <div>
+                  <div style={{ fontSize: 9, letterSpacing: "0.25em", textTransform: "uppercase", color: C.inkFaint, marginBottom: 6 }}>◆ Payoff (A, B)</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "36px 1fr 1fr", gridTemplateRows: "auto auto auto", border: `1px solid ${C.line}`, fontSize: 10 }}>
+                    <div style={{ background: "#000" }} />
+                    <div style={{ background: C.bg3, padding: 4, textAlign: "center", color: C.inkFaint, fontSize: 8, letterSpacing: "0.15em", borderLeft: `1px solid ${C.line}` }}>B:C</div>
+                    <div style={{ background: C.bg3, padding: 4, textAlign: "center", color: C.inkFaint, fontSize: 8, letterSpacing: "0.15em", borderLeft: `1px solid ${C.line}` }}>B:D</div>
+                    {[["C", "C"], ["C", "D"], ["D", "C"], ["D", "D"]].reduce((acc, [a, b], k) => {
+                      if (k === 0 || k === 2) acc.push(<div key={"l" + k} style={{ background: C.bg3, padding: 4, textAlign: "center", color: C.inkFaint, fontSize: 8, letterSpacing: "0.15em", borderTop: `1px solid ${C.line}` }}>A:{a}</div>);
+                      const active = current.move1 === a && current.move2 === b;
+                      const [pa, pb] = payoffs[a + b];
+                      acc.push(
+                        <div key={k} style={{
+                          padding: 6, textAlign: "center", borderTop: `1px solid ${C.line}`, borderLeft: `1px solid ${C.line}`,
+                          background: active ? `${C.amber}25` : "transparent",
+                          boxShadow: active ? `inset 0 0 0 1px ${C.amber}` : "none",
+                          animation: active ? "pdblink 0.6s infinite" : "none",
+                        }}>
+                          <div style={{ fontSize: 13, fontWeight: 600 }}>
+                            <span style={{ color: C.amber }}>{pa}</span><span style={{ color: C.inkFaint }}>,</span><span style={{ color: C.leafHi }}>{pb}</span>
+                          </div>
+                        </div>
+                      );
+                      return acc;
+                    }, [])}
+                  </div>
+
+                  {/* Current moves */}
+                  <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, padding: 8, border: `1px solid ${C.line}`, background: C.bg3 }}>
+                    {[["A", current.move1, current.payoff[0], C.amber], ["B", current.move2, current.payoff[1], C.leafHi]].map(([who, mv, pt, col]) => (
+                      <div key={who} style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 28, fontWeight: 700, color: mv === "C" ? C.leafHi : C.rustHi, lineHeight: 1, fontFamily: mono }}>{mv}</div>
+                        <div style={{ fontSize: 8, color: C.inkFaint, letterSpacing: "0.2em", textTransform: "uppercase", marginTop: 2 }}>{who} · {pt}pt</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Move history */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
+                  <div style={{ fontSize: 9, letterSpacing: "0.25em", textTransform: "uppercase", color: C.inkFaint }}>◆ Recent Moves</div>
+                  {[["A", current.h1, C.amber], ["B", current.h2, C.leafHi]].map(([who, hist, col]) => (
+                    <div key={who} style={{ display: "grid", gridTemplateColumns: "24px 1fr", gap: 8, alignItems: "center" }}>
+                      <span style={{ fontSize: 10, color: col, fontWeight: 600 }}>{who}</span>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 2 }}>
+                        {hist.map((m, k) => (
+                          <div key={k} style={{
+                            width: 14, height: 14, display: "flex", alignItems: "center", justifyContent: "center",
+                            fontSize: 9, fontWeight: 700,
+                            background: m === "C" ? `${C.leafHi}25` : `${C.rustHi}25`,
+                            color: m === "C" ? C.leafHi : C.rustHi,
+                            boxShadow: k === hist.length - 1 ? `0 0 0 1px ${C.amber}` : "none",
+                          }}>{m}</div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )
+        ))}
+
+        {/* RIGHT: Live Line Chart + Match Grid */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 1, background: C.line, minHeight: 0 }}>
+          {/* Live line chart with expand button */}
+          <div style={{ background: cardBg, border: `1px solid ${C.line}`, display: "flex", flexDirection: "column", minHeight: 0, flex: "0 0 auto", height: "55%" }}>
+            <div style={{ padding: "8px 14px", borderBottom: `1px solid ${C.line}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: C.bg3 }}>
+              <span style={{ fontFamily: mono, fontSize: 9, letterSpacing: "0.25em", textTransform: "uppercase", color: C.amber }}>◆ Live Score Trajectories</span>
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <span style={{ fontFamily: mono, fontSize: 9, letterSpacing: "0.15em", color: C.inkFaint, textTransform: "uppercase" }}>{strategies.length} LINES</span>
+                <button onClick={() => setChartFullscreen(true)} title="Expand chart"
+                  style={{ background: "transparent", border: `1px solid ${C.line}`, color: C.amber, padding: "3px 7px", fontFamily: mono, fontSize: 11, cursor: "pointer", lineHeight: 1 }}>⛶</button>
+              </div>
+            </div>
+            <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>
+              <LiveLineChart history={scoreHistory} strategies={strategies} totalMatches={totalMatches}
+                highlightedIdx={highlightedIdx} setHighlightedIdx={setHighlightedIdx}
+                lockedIdx={lockedIdx} setLockedIdx={setLockedIdx} />
+            </div>
+          </div>
+
+          {/* Matchup grid */}
+          {panel("Matchups", `${progress}/${totalMatches}`, (
+            <MatchupGrid strategies={strategies} matchesPlayed={matchesPlayed} current={current} />
+          ), { flex: 1 })}
+        </div>
+      </div>
+
+      {/* Fullscreen chart modal */}
+      {chartFullscreen && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(12,10,9,0.97)", zIndex: 200,
+          display: "flex", flexDirection: "column", padding: 24,
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, paddingBottom: 12, borderBottom: `1px solid ${C.line}` }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 14 }}>
+              <span style={{ fontFamily: serif, fontStyle: "italic", fontSize: 26, color: C.paper, fontVariationSettings: '"opsz" 144' }}>Score Trajectories</span>
+              <span style={{ fontFamily: mono, fontSize: 10, letterSpacing: "0.25em", color: C.inkFaint, textTransform: "uppercase" }}>
+                {progress}/{totalMatches} matches · {strategies.length} strategies · click line to isolate · Esc to close
+              </span>
+            </div>
+            <button onClick={() => { setChartFullscreen(false); setLockedIdx(null); }}
+              style={{ background: "transparent", border: `1px solid ${C.amber}`, color: C.amber, padding: "8px 16px", fontFamily: mono, fontSize: 11, letterSpacing: "0.15em", textTransform: "uppercase", cursor: "pointer", fontWeight: 600 }}>
+              ✕ Close
+            </button>
+          </div>
+          <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 16 }}>
+            <div style={{ flex: 1, minWidth: 0, background: "#000", border: `1px solid ${C.line}`, position: "relative" }}>
+              <LiveLineChart history={scoreHistory} strategies={strategies} totalMatches={totalMatches}
+                fullscreen highlightedIdx={highlightedIdx} setHighlightedIdx={setHighlightedIdx}
+                lockedIdx={lockedIdx} setLockedIdx={setLockedIdx} />
+            </div>
+            <div style={{ width: 280, background: C.bg2, border: `1px solid ${C.line}`, overflow: "auto", padding: "8px 0" }}>
+              <div style={{ padding: "4px 14px 10px", borderBottom: `1px solid ${C.line}`, fontFamily: mono, fontSize: 9, letterSpacing: "0.25em", color: C.amber, textTransform: "uppercase" }}>◆ Strategies (click to isolate)</div>
+              {strategies.map((s, i) => ({ ...s, idx: i, score: scoreHistory[scoreHistory.length - 1][i] }))
+                .sort((a, b) => b.score - a.score)
+                .map((s, rank) => {
+                  const dim = lockedIdx !== null && lockedIdx !== s.idx;
+                  const active = lockedIdx === s.idx || highlightedIdx === s.idx;
+                  return (
+                    <div key={s.idx}
+                      onClick={() => setLockedIdx(lockedIdx === s.idx ? null : s.idx)}
+                      onMouseEnter={() => setHighlightedIdx(s.idx)}
+                      onMouseLeave={() => setHighlightedIdx(null)}
+                      style={{
+                        display: "grid", gridTemplateColumns: "20px 14px 1fr 50px", gap: 8, padding: "6px 14px",
+                        cursor: "pointer", alignItems: "center", fontSize: 11,
+                        background: active ? `${STRAT_COLOR(s.category)}20` : "transparent",
+                        opacity: dim ? 0.35 : 1,
+                        borderLeft: active ? `2px solid ${STRAT_COLOR(s.category)}` : "2px solid transparent",
+                        transition: "background 0.15s, opacity 0.15s",
+                      }}>
+                      <span style={{ color: C.inkFaint, fontWeight: 600, fontFamily: mono, fontSize: 10 }}>{rank + 1}</span>
+                      <span style={{ width: 12, height: 3, background: STRAT_COLOR(s.category), display: "inline-block" }} />
+                      <span style={{ color: STRAT_COLOR(s.category), overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 500 }}>{s.name}</span>
+                      <span style={{ color: C.amber, fontWeight: 600, textAlign: "right", fontFamily: mono }}>{s.score}</span>
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Footer */}
+      <div style={{ padding: "8px 24px", borderTop: `1px solid ${C.line}`, background: C.bg2, fontSize: 9, color: C.inkFaint, letterSpacing: "0.15em", textTransform: "uppercase", display: "flex", justifyContent: "space-between" }}>
+        <span>PD-ARENA · Iterated Prisoner's Dilemma · {rounds}-round round-robin</span>
+        <span>{fmtMs(now)} · TICK {progress}</span>
+      </div>
+    </div>
+  );
+}
+
+// --- LIVE LINE CHART ---
+function LiveLineChart({ history, strategies, totalMatches, fullscreen = false, highlightedIdx, setHighlightedIdx, lockedIdx, setLockedIdx }) {
+  // Dimensions
+  const W = fullscreen ? 1400 : 700;
+  const H = fullscreen ? 700 : 240;
+  const padL = fullscreen ? 56 : 38;
+  const padR = fullscreen ? 220 : 12; // room for end-labels in fullscreen
+  const padT = fullscreen ? 24 : 12;
+  const padB = fullscreen ? 36 : 22;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const n = history.length;
+
+  if (n < 2) {
+    return <div style={{ padding: 24, color: C.inkFaint, fontSize: 11, fontStyle: "italic" }}>Awaiting first match data…</div>;
+  }
+
+  const lastScores = history[n - 1];
+  const maxY = Math.max(1, ...lastScores);
+  const xAt = (i) => padL + (i / Math.max(1, totalMatches)) * innerW;
+  const yAt = (v) => padT + innerH - (v / maxY) * innerH;
+  const stride = Math.max(1, Math.floor(n / (fullscreen ? 400 : 200)));
+
+  const ranked = strategies.map((s, i) => ({ ...s, idx: i, score: lastScores[i] }))
+    .sort((a, b) => b.score - a.score);
+  const rankOf = {}; ranked.forEach((s, k) => { rankOf[s.idx] = k; });
+
+  // Y gridlines
+  const ySteps = fullscreen ? 6 : 4;
+  const gridY = Array.from({ length: ySteps + 1 }, (_, k) => (maxY * k) / ySteps);
+
+  // For fullscreen: compute end-label positions with collision avoidance
+  let endLabels = null;
+  if (fullscreen) {
+    endLabels = strategies.map((s, i) => ({
+      i, name: s.name, color: STRAT_COLOR(s.category),
+      score: lastScores[i],
+      yReal: yAt(lastScores[i]),
+      y: yAt(lastScores[i]),
+    })).sort((a, b) => a.y - b.y);
+    const minGap = 16;
+    const topY = padT + 4, botY = H - padB - 4;
+    // Sweep down: push overlapping labels down
+    for (let k = 1; k < endLabels.length; k++) {
+      if (endLabels[k].y - endLabels[k - 1].y < minGap) {
+        endLabels[k].y = endLabels[k - 1].y + minGap;
+      }
+    }
+    // Sweep up if bottom overflowed
+    for (let k = endLabels.length - 1; k > 0; k--) {
+      if (endLabels[k].y > botY) {
+        endLabels[k].y = botY - (endLabels.length - 1 - k) * minGap;
+      }
+    }
+    // Sweep down once more in case top got crushed
+    if (endLabels[0].y < topY) endLabels[0].y = topY;
+    for (let k = 1; k < endLabels.length; k++) {
+      if (endLabels[k].y - endLabels[k - 1].y < minGap) {
+        endLabels[k].y = endLabels[k - 1].y + minGap;
+      }
+    }
+  }
+
+  // Determine line styling per strategy
+  const styleFor = (i) => {
+    const isLocked = lockedIdx !== null;
+    const isHovered = highlightedIdx !== null;
+    const isMe = lockedIdx === i || highlightedIdx === i;
+    const isTop3 = rankOf[i] < 3;
+    if (isLocked && !isMe) return { width: 0.6, opacity: 0.12 };
+    if (isHovered && !isMe) return { width: 0.7, opacity: 0.18 };
+    if (isMe) return { width: fullscreen ? 2.6 : 2.2, opacity: 1 };
+    return { width: isTop3 ? (fullscreen ? 2.0 : 1.6) : (fullscreen ? 1.2 : 0.9), opacity: isTop3 ? 0.95 : 0.55 };
+  };
+
+  return (
+    <div style={{ padding: fullscreen ? 0 : 12, display: "flex", flexDirection: "column", gap: 10, height: "100%", minHeight: 0 }}>
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none"
+        style={{ width: "100%", height: fullscreen ? "100%" : "auto", maxHeight: fullscreen ? "none" : 240, background: "#000", border: fullscreen ? "none" : `1px solid ${C.line}`, flex: fullscreen ? 1 : "none" }}
+        onClick={(e) => { if (e.target.tagName === "svg") setLockedIdx(null); }}>
+
+        {/* Grid */}
+        {gridY.map((v, k) => (
+          <g key={k}>
+            <line x1={padL} y1={yAt(v)} x2={W - padR} y2={yAt(v)} stroke={C.line} strokeWidth="0.5" strokeDasharray="2 3" />
+            <text x={padL - 6} y={yAt(v) + 3} fontSize={fullscreen ? 11 : 9} fill={C.inkFaint} textAnchor="end" fontFamily="JetBrains Mono, monospace">{Math.round(v)}</text>
+          </g>
+        ))}
+        {/* Axes */}
+        <line x1={padL} y1={H - padB} x2={W - padR} y2={H - padB} stroke={C.line} strokeWidth="0.5" />
+        <text x={padL} y={H - padB + 16} fontSize={fullscreen ? 10 : 8} fill={C.inkFaint} fontFamily="JetBrains Mono, monospace" letterSpacing="0.15em">0</text>
+        <text x={W - padR} y={H - padB + 16} fontSize={fullscreen ? 10 : 8} fill={C.inkFaint} fontFamily="JetBrains Mono, monospace" textAnchor="end" letterSpacing="0.15em">{totalMatches} MATCHES</text>
+        {fullscreen && (
+          <text x={padL - 44} y={padT + innerH / 2} fontSize="10" fill={C.inkFaint} fontFamily="JetBrains Mono, monospace" letterSpacing="0.2em" transform={`rotate(-90, ${padL - 44}, ${padT + innerH / 2})`} textAnchor="middle">CUMULATIVE SCORE</text>
+        )}
+
+        {/* Lines (with invisible thick hit-area for hover) */}
+        {strategies.map((s, i) => {
+          const points = [];
+          for (let k = 0; k < n; k += stride) points.push(`${xAt(k)},${yAt(history[k][i])}`);
+          if ((n - 1) % stride !== 0) points.push(`${xAt(n - 1)},${yAt(history[n - 1][i])}`);
+          const col = STRAT_COLOR(s.category);
+          const st = styleFor(i);
+          return (
+            <g key={i} style={{ cursor: "pointer" }}>
+              {/* Invisible hit area */}
+              <polyline points={points.join(" ")} fill="none" stroke="transparent" strokeWidth="14"
+                onMouseEnter={() => setHighlightedIdx(i)}
+                onMouseLeave={() => setHighlightedIdx(null)}
+                onClick={(e) => { e.stopPropagation(); setLockedIdx(lockedIdx === i ? null : i); }} />
+              {/* Visible line */}
+              <polyline points={points.join(" ")} fill="none" stroke={col} strokeWidth={st.width} opacity={st.opacity} strokeLinejoin="round" strokeLinecap="round" pointerEvents="none" />
+              {/* End dot */}
+              <circle cx={xAt(n - 1)} cy={yAt(history[n - 1][i])} r={lockedIdx === i || highlightedIdx === i ? 4 : (rankOf[i] < 3 ? 2.6 : 1.6)} fill={col} opacity={st.opacity} pointerEvents="none" />
+            </g>
+          );
+        })}
+
+        {/* End labels (fullscreen only) */}
+        {fullscreen && endLabels && endLabels.map((lbl) => {
+          const st = styleFor(lbl.i);
+          const isMe = lockedIdx === lbl.i || highlightedIdx === lbl.i;
+          return (
+            <g key={"lbl_" + lbl.i} style={{ cursor: "pointer" }}
+              onMouseEnter={() => setHighlightedIdx(lbl.i)}
+              onMouseLeave={() => setHighlightedIdx(null)}
+              onClick={(e) => { e.stopPropagation(); setLockedIdx(lockedIdx === lbl.i ? null : lbl.i); }}>
+              {/* Connector from line end to label */}
+              <line x1={xAt(n - 1)} y1={lbl.yReal} x2={W - padR + 4} y2={lbl.y} stroke={lbl.color} strokeWidth="0.5" opacity={st.opacity * 0.6} />
+              {/* Color swatch */}
+              <rect x={W - padR + 6} y={lbl.y - 4} width="3" height="8" fill={lbl.color} opacity={st.opacity} />
+              {/* Name */}
+              <text x={W - padR + 14} y={lbl.y + 3} fontSize="10" fill={lbl.color} opacity={isMe ? 1 : st.opacity}
+                fontFamily="JetBrains Mono, monospace" fontWeight={isMe ? 700 : 500}>
+                {lbl.name.length > 20 ? lbl.name.slice(0, 19) + "…" : lbl.name}
+              </text>
+              {/* Score */}
+              <text x={W - padR + 200} y={lbl.y + 3} fontSize="10" fill={C.amber} opacity={isMe ? 1 : st.opacity}
+                fontFamily="JetBrains Mono, monospace" textAnchor="end" fontWeight="600">{lbl.score}</text>
+            </g>
+          );
+        })}
+      </svg>
+
+      {/* Compact legend (non-fullscreen only) */}
+      {!fullscreen && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "2px 12px", overflow: "auto", minHeight: 0, fontSize: 10 }}>
+          {ranked.slice(0, 14).map((s, k) => (
+            <div key={s.idx} style={{ display: "grid", gridTemplateColumns: "10px 16px 1fr auto", gap: 6, alignItems: "center" }}>
+              <span style={{ width: 8, height: 2, background: STRAT_COLOR(s.category), display: "inline-block" }} />
+              <span style={{ color: C.inkFaint, fontWeight: 600 }}>{k + 1}</span>
+              <span style={{ color: STRAT_COLOR(s.category), overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
+              <span style={{ color: C.amber, fontWeight: 600 }}>{s.score}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- MATCHUP GRID ---
+function MatchupGrid({ strategies, matchesPlayed, current }) {
+  const n = strategies.length;
+  const cellSize = `minmax(0, 1fr)`;
+
+  const codeOf = (s) => s.name.split(" ").map(w => w[0]).join("").slice(0, 3).toUpperCase();
+
+  return (
+    <div style={{ padding: 10, height: "100%", overflow: "auto" }}>
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: `46px repeat(${n}, ${cellSize})`,
+        gap: 1,
+        background: C.line,
+        padding: 1,
+        fontSize: 8,
+      }}>
+        <div style={{ background: "#000" }} />
+        {strategies.map((s, k) => (
+          <div key={k} style={{ background: C.bg3, padding: "3px 1px", textAlign: "center", color: STRAT_COLOR(s.category), fontWeight: 600, writingMode: "vertical-rl", transform: "rotate(180deg)", fontSize: 8 }}>{codeOf(s)}</div>
+        ))}
+        {strategies.map((rs, ri) => (
+          <React.Fragment key={"r" + ri}>
+            <div style={{ background: C.bg3, padding: "2px 4px", textAlign: "right", color: STRAT_COLOR(rs.category), fontWeight: 600, fontSize: 9, display: "flex", alignItems: "center", justifyContent: "flex-end" }}>{codeOf(rs)}</div>
+            {strategies.map((cs, ci) => {
+              const key = ri < ci ? `${ri}-${ci}` : `${ci}-${ri}`;
+              const res = matchesPlayed[key];
+              const isLive = current && ((current.i === ri && current.j === ci) || (current.i === ci && current.j === ri));
+              const isDiag = ri === ci;
+              let label = "·";
+              let color = C.inkFaint;
+              let bg = C.bg2;
+              if (isDiag) { label = "—"; bg = "#050505"; }
+              else if (res) {
+                const myScore = ri < ci ? res.score1 : res.score2;
+                const oppScore = ri < ci ? res.score2 : res.score1;
+                label = String(myScore);
+                bg = C.bg3;
+                color = myScore > oppScore ? C.leafHi : myScore < oppScore ? C.rustHi : C.amber;
+              }
+              if (isLive) { bg = C.amber; color = C.bg; label = "●"; }
+              return (
+                <div key={`${ri}-${ci}`} title={`${rs.name} vs ${cs.name}${res ? ` · ${res.score1}-${res.score2}` : ""}`}
+                  style={{ background: bg, padding: "3px 1px", textAlign: "center", fontSize: 8, fontWeight: 600, color, aspectRatio: "1", display: "flex", alignItems: "center", justifyContent: "center", animation: isLive ? "pdblink 0.5s infinite" : "none" }}>
+                  {label}
+                </div>
+              );
+            })}
+          </React.Fragment>
+        ))}
+      </div>
+      <div style={{ marginTop: 10, fontSize: 8, color: C.inkFaint, letterSpacing: "0.15em", textTransform: "uppercase", display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, background: C.amber, verticalAlign: "middle", marginRight: 4 }} />Live</span>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, background: C.leafHi, verticalAlign: "middle", marginRight: 4 }} />Win</span>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, background: C.rustHi, verticalAlign: "middle", marginRight: 4 }} />Loss</span>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // MAIN APP
 // ============================================================
 export default function PDArena() {
@@ -968,6 +1705,8 @@ export default function PDArena() {
     return sum > 0 ? ip.map(v => v / sum) : null;
   }, []);
 
+  const [liveStrats, setLiveStrats] = useState(null); // strategies for live view
+
   const runTournamentHandler = useCallback(() => {
     if (selectedStrategies.length < 2) return;
     if (!payoffsValid) return;
@@ -975,16 +1714,28 @@ export default function PDArena() {
     setView("results");
     setResultTab("standings");
     setReplayMatch(null);
-    setTimeout(() => {
-      const strats = selectedStrategies.map(i => allStrategies[i]);
-      const results = runTournament(strats, rounds, noise, payoffs);
-      setTournamentResults({ ...results, strategies: strats, indices: selectedStrategies, payoffs });
-      const initPops = makeInitPops(strats, evoPreset, cooperatorBias, results.standings);
-      const evoData = runEvolution(strats, rounds, noise, 80, initPops, payoffs);
-      setEvolutionData(evoData);
-      setIsRunning(false);
-    }, 50);
-  }, [selectedStrategies, rounds, noise, allStrategies, evoPreset, cooperatorBias, payoffs, payoffsValid, makeInitPops]);
+    setTournamentResults(null);
+    setEvolutionData(null);
+    const strats = selectedStrategies.map(i => allStrategies[i]);
+    setLiveStrats(strats);
+  }, [selectedStrategies, allStrategies, payoffsValid]);
+
+  // Called by LiveTournamentView when streaming completes
+  const handleLiveComplete = useCallback((results) => {
+    if (!liveStrats) return;
+    setTournamentResults({ ...results, strategies: liveStrats, indices: selectedStrategies, payoffs });
+    const initPops = makeInitPops(liveStrats, evoPreset, cooperatorBias, results.standings);
+    const evoData = runEvolution(liveStrats, rounds, noise, 80, initPops, payoffs);
+    setEvolutionData(evoData);
+    setIsRunning(false);
+    setLiveStrats(null);
+  }, [liveStrats, selectedStrategies, payoffs, evoPreset, cooperatorBias, makeInitPops, rounds, noise]);
+
+  const handleLiveCancel = useCallback(() => {
+    setIsRunning(false);
+    setLiveStrats(null);
+    setView("home");
+  }, []);
 
   const handleMatchSelect = (i, j) => {
     // i, j are local indices into the tournament's strategies array
@@ -1086,6 +1837,18 @@ export default function PDArena() {
 
   // ==================== RESULTS VIEW ====================
   if (view === "results") {
+    if (isRunning && liveStrats) {
+      return (
+        <LiveTournamentView
+          strategies={liveStrats}
+          rounds={rounds}
+          noise={noise}
+          payoffs={payoffs}
+          onComplete={handleLiveComplete}
+          onCancel={handleLiveCancel}
+        />
+      );
+    }
     if (isRunning) {
       return (
         <div style={s.app} className="pd-root">
